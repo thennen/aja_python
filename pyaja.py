@@ -11,6 +11,7 @@ Here goes nothing...
 # TODO: build in txt/email
 # TODO: Some kind of indication of progress.  text based is fine
 # TODO: Toggle of DC switch changes the state of others.  How to deal with it?
+# TODO: Use config file to set program settings, and other way around
 
 import win32api
 import win32con
@@ -18,7 +19,7 @@ import win32gui
 import win32com.client
 from time import sleep
 
-# Control classes that keep track of their state
+### Control classes ###
 
 class Button(object):
     def __init__(self, initval, location):
@@ -43,23 +44,24 @@ class Numeric(object):
         change_value(self.loc, value)
         self.val = value
 
-# Control containers
+### Control containers ###
+
 
 class Power_Supply(dict):
     def __init__(self, x, y, switched=False, sw_state=False):
         # x, y should be the inner top left corner of the control box
-        self['percent'] = Numeric(0.00, (x + 45, y + 130))
-        self['ramp'] = Numeric(60, (x + 45, y + 156))
-        self['onoff'] = Button(False, (x + 26, y + 213))
-        self['shutter'] = Button(False, (x + 82, y + 197))
+        self['PERCENT'] = Numeric(0.00, (x + 45, y + 130))
+        self['RAMP'] = Numeric(60, (x + 45, y + 156))
+        self['ONOFF'] = Button(False, (x + 26, y + 213))
+        self['SHUTTER'] = Button(False, (x + 82, y + 197))
         if switched:
-            self['switch'] = Button(sw_state, (x + 16, y + 158))
+            self['SWITCH'] = Button(sw_state, (x + 16, y + 158))
 
 
 class Gas(dict):
     def __init__(self, x, y):
-        self['onoff'] = Button(False, (x + 71, y + 12))
-        self['stpt'] = Numeric(0.0, (x + 48, y + 69))
+        self['ONOFF'] = Button(False, (x + 71, y + 12))
+        self['STPT'] = Numeric(0.0, (x + 48, y + 69))
 
 # Time in seconds to pause between gui actions
 DELAY = 0.000
@@ -80,12 +82,26 @@ CONTROLS = {'SYSTEM_CONFIG': Button(False, (54, 252)),
             'GAS3': Gas(473, 157)
             }
 
-# Define connections
-# Or get them from a file
-CONNECTIONS = {'Ta': 'DC1',
-               'Pt': 'DC2',
-               'Tb': 'DC3',
-               'Si': 'DC5A'}
+# Get material power supplies and shutters from file
+#targetdata = np.loadtxt('connections.txt', comments='#', delimiter='\t', dtype=str)
+#POWER_SUPPLIES = {k: ps for k, ps, gun in targetdata}
+#GUNS = {k: gun for k, ps, gun in targetdata}
+# Without numpy
+POWER_SUPPLIES = {}
+GUNS = {}
+with open('connections.txt', 'r') as f:
+    for line in f.readlines():
+        if not line.startswith('#'):
+            mat, ps, gun = line.split('\t')
+            POWER_SUPPLIES[mat] = ps.strip()
+            # Maybe should be integer?
+            GUNS[mat] = gun.strip()
+
+
+#POWER_SUPPLIES = {'Ta': 'DC1',
+#               'Pt': 'DC2',
+#               'Tb': 'DC3',
+#               'Si': 'DC5A'}
 
 # TODO: Define sputter rate calibration
 # Or get it from a file
@@ -153,15 +169,17 @@ def bake(hours=8):
 
 def gas(which=1, sccm=20):
     # Flow gas
-    # TODO: Don't allow if shutter is closed?
+    # Don't allow if shutter is closed
+    if CONTROLS['PRESSURE_POSITION'].val < 10:
+        raise Exception('Open vacuum shutter before flowing gas.')
     which = int(which)
     assert(which in (1, 2, 3))
     whichgas = 'GAS' + str(which)
     # Set the new sccm
-    stpt = CONTROLS[whichgas]['stpt']
+    stpt = CONTROLS[whichgas]['STPT']
     stpt.set(sccm)
     # Decide whether to hit on/off button
-    onoff = CONTROLS[whichgas]['onoff']
+    onoff = CONTROLS[whichgas]['ONOFF']
     state = onoff.val
     if sccm == 0 and state:
         # Press off button if gas is on
@@ -178,50 +196,62 @@ def shutter(position):
     CONTROLS['PRESSURE_POSITION'].set(position)
 
 
-def light(material=None, power=10):
+def light(material=None, percent=None, watts=None):
     ''' Create plasma '''
-    # TODO: check that gas is flowing and shutter is partially closed
-    # TODO: check not already lit
-    # TODO: take power in percent or watts
+    if not ((percent is None) ^ (watts is None)):
+        raise Exception('Must give either percent or watts, and not both')
+    if percent is None:
+        percent = watts / 500. * 100
+
+    if CONTROLS['GAS1']['ONOFF'].val == 0:
+        print('Attempting to light without Argon flow')
+    if CONTROLS['PRESSURE_POSITION'] > 900:
+        print('Attempting to light target with open vacuum shutter')
     # TODO: option to specify gun or power supply instead of material
     # TODO: verify plasma started!
-    ps = CONNECTIONS[material]
+    ps = POWER_SUPPLIES[material]
     psbox = CONTROLS[ps]
     # Make sure switch is on if it's a switched supply
-    if hasattr(psbox, 'switch') and not psbox['switch'].val:
-        psbox['switch'].toggle()
-    psbox['percent'].set(power)
-    psbox['ramp'].set(3)
-    psbox['onoff'].toggle()
+    # just click the switch button no matter what
+    if hasattr(psbox, 'SWITCH'):
+        psbox['SWITCH'].toggle()
+
+    # Check not already lit
+    if psbox['ONOFF'].val:
+        print('Already lit!')
+        return
+
+    psbox['PERCENT'].set(percent)
+    psbox['RAMP'].set(3)
+    psbox['ONOFF'].toggle()
 
 
 def unlight(material=None):
-    ps = CONNECTIONS[material]
+    ps = POWER_SUPPLIES[material]
     psbox = CONTROLS[ps]
-    if psbox['onoff'].val:
-        psbox['onoff'].toggle()
+    if psbox['ONOFF'].val:
+        psbox['ONOFF'].toggle()
 
 
 def deposit(material, thickness=None, time=None, power=10):
     ''' Deposit a material, given thickness or time'''
     # Check if lit, if not, light and wait a little
-    ps = CONNECTIONS[material]
+    ps = POWER_SUPPLIES[material]
     psbox = CONTROLS[ps]
     # Sanity check shutter not already open
-    if psbox['shutter'].val:
+    if psbox['SHUTTER'].val:
         raise Exception('Shutter already open!')
-    state = psbox['onoff'].val
+    state = psbox['ONOFF'].val
     if state is False:
         light(material, power)
         sleep(2)
-    psbox['shutter'].toggle()
+    psbox['SHUTTER'].toggle()
     sleep(time)
-    psbox['shutter'].toggle()
+    psbox['SHUTTER'].toggle()
 
 
 def codeposit():
     # Sputter more than one thing
-    # Give times for each to start?
     pass
 
 
@@ -236,6 +266,7 @@ def standby():
             control.set(control.default)
 
     # Loop through controls and subcontrols
+    # TODO: Hit buttons first?
     for c in CONTROLS.values():
         if type(c) in (Power_Supply, Gas):
             for sc in c.values():

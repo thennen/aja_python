@@ -1,0 +1,8 @@
+# This file defines the connections and positions of sputter targets
+# Just make sure the ones that you are using are correctly set
+# Extras will have no effect
+#material	power_supply	gun
+Ta	DC1	2
+Pt	DC2	7
+Co	DC3	3
+W	DC5A	5
