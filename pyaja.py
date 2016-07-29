@@ -20,10 +20,11 @@ from time import sleep
 
 # Control classes that keep track of their state
 
-
 class Button(object):
     def __init__(self, initval, location):
-        self.val = bool(initval)
+        initval = bool(initval)
+        self.val = initval
+        self.default = initval
         # should be a 2-tuple pixel location
         self.loc = location
 
@@ -35,34 +36,36 @@ class Button(object):
 class Numeric(object):
     def __init__(self, initval, location):
         self.val = initval
+        self.default = initval
         self.loc = location
 
     def set(self, value):
         change_value(self.loc, value)
         self.val = value
 
+# Control containers
 
-class Power_Supply(object):
+class Power_Supply(dict):
     def __init__(self, x, y, switched=False, sw_state=False):
         # x, y should be the inner top left corner of the control box
-        self.percent = Numeric(0.00, (x + 45, y + 130))
-        self.ramp = Numeric(60, (x + 45, y + 156))
-        self.onoff = Button(False, (x + 26, y + 213))
-        self.shutter = Button(False, (x + 82, y + 197))
+        self['percent'] = Numeric(0.00, (x + 45, y + 130))
+        self['ramp'] = Numeric(60, (x + 45, y + 156))
+        self['onoff'] = Button(False, (x + 26, y + 213))
+        self['shutter'] = Button(False, (x + 82, y + 197))
         if switched:
-            self.switch = Button(sw_state, (x + 16, y + 158))
+            self['switch'] = Button(sw_state, (x + 16, y + 158))
 
 
-class Gas(object):
+class Gas(dict):
     def __init__(self, x, y):
-        self.onoff = Button(False, (x + 71, y + 12))
-        self.stpt = Numeric(0.0, (x + 48, y + 69))
+        self['onoff'] = Button(False, (x + 71, y + 12))
+        self['stpt'] = Numeric(0.0, (x + 48, y + 69))
 
 # Time in seconds to pause between gui actions
-DELAY = 0.02
+DELAY = 0.000
 
 CONTROLS = {'SYSTEM_CONFIG': Button(False, (54, 252)),
-            'PRESSURE_POSITION': Numeric(0, (765, 205)),
+            'PRESSURE_POSITION': Numeric(1000, (765, 205)),
             'DC1': Power_Supply(20, 518),
             'DC2': Power_Supply(144, 518),
             'DC3': Power_Supply(269, 518),
@@ -91,12 +94,12 @@ CONNECTIONS = {'Ta': 'DC1',
 PHASEII = None
 
 
-def callback(hwnd, *args):
+def enum_callback(hwnd, *args):
     global PHASEII
     txt = win32gui.GetWindowText(hwnd)
     if txt == 'AJA INTERNATIONAL PHASE II J COMPUTER CONTROL':
         PHASEII = hwnd
-win32gui.EnumWindows(callback, None)
+win32gui.EnumWindows(enum_callback, None)
 if PHASEII is None:
     raise Exception('AJA PHASE II program not found.  Open it!')
 
@@ -106,8 +109,10 @@ shell = win32com.client.Dispatch('WScript.Shell')
 
 def show_PHASEII():
     # Bring PHASEII program to the foreground
-    shell.SendKeys('%')
-    win32gui.SetForegroundWindow(PHASEII)
+    if not win32gui.GetForegroundWindow == PHASEII:
+        shell.SendKeys('%')
+        win32gui.SetForegroundWindow(PHASEII)
+        sleep(.3)
 
 
 def click((x, y), n=1):
@@ -137,6 +142,9 @@ def get_value(control):
 
 ##### High level functions #####
 
+def set_temp(temp):
+    pass
+
 
 def bake(hours=8):
     # Bake chamber
@@ -150,10 +158,10 @@ def gas(which=1, sccm=20):
     assert(which in (1, 2, 3))
     whichgas = 'GAS' + str(which)
     # Set the new sccm
-    stpt = CONTROLS[whichgas].stpt
+    stpt = CONTROLS[whichgas]['stpt']
     stpt.set(sccm)
     # Decide whether to hit on/off button
-    onoff = CONTROLS[whichgas].onoff
+    onoff = CONTROLS[whichgas]['onoff']
     state = onoff.val
     if sccm == 0 and state:
         # Press off button if gas is on
@@ -180,18 +188,18 @@ def light(material=None, power=10):
     ps = CONNECTIONS[material]
     psbox = CONTROLS[ps]
     # Make sure switch is on if it's a switched supply
-    if hasattr(psbox, 'switch') and not psbox.switch.val:
-        psbox.switch.toggle()
-    psbox.percent.set(power)
-    psbox.ramp.set(3)
-    psbox.onoff.toggle()
+    if hasattr(psbox, 'switch') and not psbox['switch'].val:
+        psbox['switch'].toggle()
+    psbox['percent'].set(power)
+    psbox['ramp'].set(3)
+    psbox['onoff'].toggle()
 
 
 def unlight(material=None):
     ps = CONNECTIONS[material]
     psbox = CONTROLS[ps]
-    if psbox.onoff.val:
-        psbox.onoff.toggle()
+    if psbox['onoff'].val:
+        psbox['onoff'].toggle()
 
 
 def deposit(material, thickness=None, time=None, power=10):
@@ -200,15 +208,15 @@ def deposit(material, thickness=None, time=None, power=10):
     ps = CONNECTIONS[material]
     psbox = CONTROLS[ps]
     # Sanity check shutter not already open
-    if psbox.shutter.val:
+    if psbox['shutter'].val:
         raise Exception('Shutter already open!')
-    state = psbox.onoff.val
+    state = psbox['onoff'].val
     if state is False:
         light(material, power)
         sleep(2)
-    psbox.shutter.toggle()
+    psbox['shutter'].toggle()
     sleep(time)
-    psbox.shutter.toggle()
+    psbox['shutter'].toggle()
 
 
 def codeposit():
@@ -219,7 +227,21 @@ def codeposit():
 
 def standby():
     # Return all settings to standby state
-    pass
+    def set_default(control):
+        if type(control) == Button:
+            if not control.val == control.default:
+                control.toggle()
+        elif type(control) == Numeric:
+            # No harm in overwriting default value
+            control.set(control.default)
+
+    # Loop through controls and subcontrols
+    for c in CONTROLS.values():
+        if type(c) in (Power_Supply, Gas):
+            for sc in c.values():
+                set_default(sc)
+        else:
+            set_default(c)
 
 
 def test_deposition():
